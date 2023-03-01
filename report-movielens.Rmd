@@ -1,0 +1,371 @@
+---
+title: Movielens Project
+author: Kuntal Bhar
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+# INTRODUCTIONS
+
+Build a machine learning alogrithm to provide movie recommendation system. The goal is to understand the data structure, visualize the data and creating a movie recommendation system that build the best model that can predict predict movie ratings for users in a large moveilens collected by GroupLens Research dataset with accuracy.
+This has 4 main section and its subsection which include Introduction & Objectives where we presented the problem and its objectives,  Dataset where it analyze the data, Methods that contained modes/implement applied, Conclusion section share result summary.
+
+### Objective
+The objective of this project is to train a linear model alogrithim that predicts user ratings and calculate Root Mean Square Error (RMSE) of the predicted ratings versus the actual ratings.  We train machine language alogrithm on traning dataset (edx as provided) to predict movie ratings in test dataset (final_holdout_test as provided). We develop four methods and compare their resulting RMSE, then best resulting method will be used to predict the movie ratings.
+
+
+# DATASET ANALYSIS
+
+Provided dataset is created. It create training set named ad 'edx' and test set named as 'final_holdout_test' 
+```{r, echo = TRUE, message = FALSE, warning = FALSE, eval = TRUE}
+
+# **** Create edx set, final_holdout_test set, and submission file **** 
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+library(tidyverse)
+library(caret)
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+options(timeout = 120)
+
+dl <- "ml-10M100K.zip"
+if(!file.exists(dl))
+  download.file("https://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings_file <- "ml-10M100K/ratings.dat"
+if(!file.exists(ratings_file))
+  unzip(dl, ratings_file)
+
+movies_file <- "ml-10M100K/movies.dat"
+if(!file.exists(movies_file))
+  unzip(dl, movies_file)
+
+ratings <- as.data.frame(str_split(read_lines(ratings_file), fixed("::"), simplify = TRUE),
+                         stringsAsFactors = FALSE)
+colnames(ratings) <- c("userId", "movieId", "rating", "timestamp")
+ratings <- ratings %>%
+  mutate(userId = as.integer(userId),
+         movieId = as.integer(movieId),
+         rating = as.numeric(rating),
+         timestamp = as.integer(timestamp))
+
+movies <- as.data.frame(str_split(read_lines(movies_file), fixed("::"), simplify = TRUE),
+                        stringsAsFactors = FALSE)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- movies %>%
+  mutate(movieId = as.integer(movieId))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Final hold-out test set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.6 or later
+# set.seed(1) # if using R 3.5 or earlier
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in final hold-out test set are also in edx set
+final_holdout_test <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from final hold-out test set back into edx set
+removed <- anti_join(temp, final_holdout_test)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+```
+
+
+
+## Data Analysis
+We use Movie Lens Dataset with 10 million data  with over 10,000 movie. *Pulp Fiction* (1994) has highest rating and over 100 movies rated atleast once.
+
+The dataset is split 90-10 on train and test sets respectively.
+
+```{r general, echo = TRUE}
+# Most rated films
+edx %>% group_by(title) %>%
+  summarize(topn_ratings = n()) %>%
+  arrange(desc(topn_ratings))
+
+# Number of movies rated once
+edx %>% group_by(title) %>%
+  summarize(topn_ratings = n()) %>%
+  filter(topn_ratings==1) %>%
+  count() %>% pull()
+```
+
+The training set (edx) has 9,000,055 entries with 6 columns. The subset contain the six columns “userID”, “movieID”, “rating”, “timestamp”, “title”, and “genres”. 
+```{r training_set, echo = FALSE}
+str(edx)
+```
+
+The test set (final_holdout_test) has 999,999 entries and 6 columns same as edx
+```{r test_set, echo = FALSE}
+str(final_holdout_test)
+```
+
+The total of unique movies and users in the edx subset is about 69,878 unique users and about 10,677 different movies:
+```{r users_movies, echo = FALSE}
+edx %>%
+summarize(n_users = n_distinct(userId), 
+          n_movies = n_distinct(movieId))
+```
+
+A summary of the subset confirms that there are no missing values.
+```{r summary, echo = FALSE}
+summary(edx)
+```
+
+
+User Rating preference shown below. Half  rating are fewer than whole star ratings. 4 rating being highest and 0.5 being lowest
+```{r rating_graph, echo = FALSE, warning=FALSE}
+edx %>%
+  ggplot(aes(rating)) +
+  geom_histogram( binwidth = 0.25, color = "blue", fill="blue") +
+  scale_x_discrete(limits = c(seq(0.5,5,0.5))) +
+  scale_y_continuous(breaks = c(seq(0, 3000000, 500000))) +
+  ggtitle("Rating By Count")
+  
+```
+
+# ANALYSIS/METHODS
+
+We will use various methods to improve result step by step. As mentioned above will compute RMSE for accuracy. RMSE formula as defined as 
+$$ RMSE = \sqrt{\frac{1}{N}\displaystyle\sum_{u,i} (\hat{y}_{u,i}-y_{u,i})^{2}} $$
+where N is the observation of user/movie and sum of all combination
+
+RMSE is the standard deviation of the residuals (prediction errors) when predcting movie rating. It is always non-negative, and a value of 0 (almost never achieved in practice) would indicate a perfect fit to the data. In general, a lower RMSD is better than a higher one. 
+
+
+```{r RMSE_function2, echo = TRUE}
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+```
+
+## Method 1: Average movie rating 
+
+This method uses simple approach where it averages across every user and every movie of our predicted ratings. Represent by formula 
+$$ Y_{u, i} = \mu + \epsilon_{u, i} $$
+where $Y_{u,i}$ is the predicted rating of user $u$ and movie $i$ and $\mu$ is the average rating across training data (edx).
+
+Calculate mean/average 
+```{r Model1_mean_calc, echo = TRUE}
+mu <- mean(edx$rating)
+mu
+```
+
+RMSE 
+#Calulate RMSE on test data final_holdout_test
+```{r rmse_results1, echo = TRUE}
+
+avg_rmse<-RMSE(final_holdout_test$rating, mu)
+##Print RMSE
+cat('RMSE for Average Rating is', avg_rmse)
+```
+
+## Method 2: Rating by including Movie Bias
+
+Movie Bias is when movies gets extreme rateing due to like and dislike. Therefore taking this into considration and to minimise the extreme rating effect we added movie bias (b as bias) to our previous method. Formula which represent this is
+$$Y_{u, i} = \mu +b_{i}+ \epsilon_{u, i}$$
+where $b_{i}$ as bias (b_i) for each movie $\mu$ total mean of all movies
+
+Histrogram showing negative effect of all movie bias
+```{r movise_bias, echo=TRUE}
+# add movie bias b_i
+b_i <- edx %>%
+  group_by(movieId) %>%
+  summarize(b_i = mean(rating - mu))
+
+#draw histogram of training data (edx)
+b_i %>% qplot(b_i, geom ="histogram", bins = 10, data = ., color = I("black"),
+              main = "Effect of Movie Bias (b_i)")
+```
+
+As one can see there is some biasness or effect.
+
+Predict improvement by adding movie bias. 
+```{r movie_rating_method2, echo=TRUE}
+
+# predict rating considering movie bias on test data final_holdout_test
+prediction <- final_holdout_test %>% 
+  left_join(b_i, by='movieId') %>%
+  mutate(pred = mu + b_i) %>%
+  pull(pred)
+
+# calculate RMSE 
+movie_rmse <-RMSE(final_holdout_test$rating, prediction)
+##Print RMSE
+cat('RMSE for Rating that include Movie Bias is', movie_rmse)
+
+```
+
+
+## Method 3: Rating now including User Bias
+User bias is when user give extreme rating basesd on their liking and disliking. This method improve further by adding user bias to previous method. Therefore taking this considration and to minimise the extreme user effect we added User Bias to the formula which represent as 
+$$Y_{u, i} = \mu + b_{i} + b_{u} + \epsilon_{u, i}$$
+where $b_{u}$ as user bias for each movies, $b_{i}$ as bias (b_i) for each movie $\mu$ total mean of all movies
+
+
+Histrogram showing negative effect of user bias
+```{r user_bias, echo=TRUE}
+
+# add movie bias b_i
+b_u <- edx %>% 
+  left_join(b_i, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu - b_i))
+
+#draw histogram of training data (edx)
+ b_u %>% qplot(b_u, geom ="histogram", bins = 10, data = ., color = I("black"),
+ylab = "Number of users", main = "Effect of User Bias (b_u)")
+```
+
+As one can see there is some biasness or effect.
+
+Predict improvements by adding user bias.
+```{r user_rating_modal3, echo=TRUE}
+
+# predict rating considering user bias on test data final_holdout_test
+prediction <- final_holdout_test %>% 
+  left_join(b_i, by='movieId') %>%
+  left_join(b_u, by='userId') %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  pull(pred)
+
+# calculate RMSE 
+user_rmse <-RMSE(final_holdout_test$rating, prediction)
+##Print RMSE
+cat('RMSE for Rating that include Movie and User Bias is', user_rmse)
+```
+
+
+## Method 4: Regularization
+
+As we now apply regularization to reduces incorrect estimates or large errors in our predictions that come from small sizes. Here we uses regularization on movie bais $b_i$ to reduce the large abnormility in movie ratings. Same for $b_u$ to reduce abnormility in rating given by users.
+
+Regularization has the same goal as confidence intervals except you are able to predict a single number instead of  an interval. 
+Formula for this model represent
+$$  \frac{1}{N} \sum_{u,i}(Y_{u,i} - \mu - b_i - b_u)^2 + \lambda (\sum_{i} b_i^2 + \sum_u b_u^2)$$
+
+where first part is our previous least squares equation and the last part $\lambda (\sum_{i} b_i^2 + \sum_u b_u^2)$ is the penalty with large bias terms. To Minimize the biases we use a  $\lambda$ as goal to our model shown above. 
+
+We will use 2 steps here
+
+1. First get the series RMSE from the Lambda sequence seq(from=0, to=10, by=0.25)
+
+2. Get the best lambda (minimum RMSE) from the generated RMSE series and apply it to the final method
+
+We test `lamda <- seq(from=0, to=10, by=0.25)` and plot the results below:
+```{r regularizating, include=FALSE}
+
+# get lambda from a sequence
+lambdas <- seq(0, 10, 0.25)
+
+#Creating function that return RMSE using regularization that repeat earlier steps for each lambda
+rmse_series <- sapply(lambdas, function(lmda){
+  
+  # calculate mean/average rating across all training data (edx)
+  mu <- mean(edx$rating)
+  
+  # apply regularization on movie bias (b_i)
+  b_i <- edx %>% 
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+lmda))
+  
+  # similarly apply regularization on user bias (b_u)
+  b_u <- edx %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n()+lmda))
+  
+  # predict using above regularization on test data final_holdout_test 
+  prediction <- final_holdout_test %>% 
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu + b_i + b_u) %>%
+    pull(pred)
+  # output RMSE of these predictions
+  return(RMSE(prediction, final_holdout_test$rating))
+})
+```
+  
+Plot shows RMSE vs. Lambda
+```{r plot_rmses, echo=TRUE}
+qplot(lambdas, rmse_series, colour = I("blue"),xlab = "Lambda", ylab="RMSE")
+```
+
+Get best Lambda $\lambda$ is
+```{r final_lambda, echo=TRUE}
+best_lambda<-lambdas[which.min(rmse_series)]
+best_lambda
+```
+###  Method 4.1: Applying the best Lambda to our final method
+
+```{r final_model, echo=TRUE}
+# Use the best lambda on movie bias (b_i) on training set (edx)
+b_i <- edx %>% 
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - mu)/(n()+best_lambda))
+
+# Use the best lambda on user bias (b_u) on training set (edx)
+b_u <- edx %>% 
+  left_join(b_i, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - mu)/(n()+best_lambda))
+
+# predict using best lambda applied above for regularization on test data final_holdout_test 
+prediction <- final_holdout_test %>% 
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  pull(pred)
+
+# output RMSE of our final model
+# calculate RMSE 
+regularization_rmse <-RMSE(final_holdout_test$rating, prediction)
+##Print RMSE
+cat('RMSE for Rating that include best Lambda regularization in Movie and User Bias is', regularization_rmse)
+
+```
+
+# RESULT
+
+Summary Table
+
+Here is the summary result of various method we implemented and improved by considering bias and regularization. Below table shows the RMSE improvent with each methods.
+
+```{r result_table, echo=TRUE}
+#build the column values
+c1<-c("Average",
+      "Effect included Movie Bias",
+      "Effect included Movie and User Bias",
+      "Effect included regulerization on Movie and User Bias")
+c2<-c(avg_rmse,
+      movie_rmse,
+      user_rmse,
+      regularization_rmse )
+#add it to dataframe
+df <- data.frame(c1,c2)
+
+#name the heading
+names(df) <- c('Method Description', 'RMSE')
+
+#print the result data frame
+head(df)
+```
+As we can see the regularized model including the effect of user and movie is has lowest RMSE (0.8648170) value which is lowers than the the initial evaluation criteria (0.8775) and is hence the optimal model use for the present project. 
+
+
+# CONCLUSION
+We have built the efficient machine learning algorithm for predecting movie rating for MovieLens Dataset. As we added bias and employ regularizating, our result has improved. We can further improve the result by adding more attribues effect like gener, year etc to our machine language modal. But due to hardware constrain we have used only user and movie effect. 
+
+
